@@ -360,11 +360,11 @@
                             <!-- Leyenda Detallada debajo del Grafico -->
                             <div class="mt-4 grid grid-cols-2 gap-2 text-sm">
                                 <div class="bg-dark-800/50 p-2.5 rounded-lg flex flex-col justify-center items-center border-t-2 border-green-500">
-                                    <span class="text-green-500 font-bold text-base whitespace-nowrap" id="stat-work">0.0 h</span>
+                                    <span class="text-green-500 font-bold text-base whitespace-nowrap" id="stat-work">0 h 0 min</span>
                                     <span class="text-gray-400 text-2xs uppercase tracking-wider font-semibold mt-1">Horas Trabajadas</span>
                                 </div>
                                 <div class="bg-dark-800/50 p-2.5 rounded-lg flex flex-col justify-center items-center border-t-2 border-red-500">
-                                    <span class="text-red-500 font-bold text-base whitespace-nowrap" id="stat-idle">0.0 h</span>
+                                    <span class="text-red-500 font-bold text-base whitespace-nowrap" id="stat-idle">0 h 0 min</span>
                                     <span class="text-gray-400 text-2xs uppercase tracking-wider font-semibold mt-1">Tiempo Perdido</span>
                                 </div>
                             </div>
@@ -1663,10 +1663,18 @@
 
         function renderDoughnutChart(data) {
             if(charts.doughnut) charts.doughnut.destroy();
+
+            // Mostrar los resultados de Eficiencia de Flota en horas y minutos
+            const formatHoursMinutes = (decimalHours) => {
+                const totalMinutes = Math.round((Number(decimalHours) || 0) * 60);
+                const hours = Math.floor(totalMinutes / 60);
+                const minutes = totalMinutes % 60;
+                return `${hours} h ${minutes} min`;
+            };
             
             if(data.length === 0) {
-                if (els.statWork) els.statWork.textContent = '0.0 h';
-                if (els.statIdle) els.statIdle.textContent = '0.0 h';
+                if (els.statWork) els.statWork.textContent = '0 h 0 min';
+                if (els.statIdle) els.statIdle.textContent = '0 h 0 min';
                 return;
             }
 
@@ -1680,10 +1688,10 @@
             let tGapAll = Math.max(0, tCapacityAll - tWorkAll);
             
             if (els.statWork) {
-                els.statWork.textContent = `${formatNumber(tWorkAll, 1)} h`;
+                els.statWork.textContent = formatHoursMinutes(tWorkAll);
             }
             if (els.statIdle) {
-                els.statIdle.textContent = `${formatNumber(tGapAll, 1)} h`;
+                els.statIdle.textContent = formatHoursMinutes(tGapAll);
             }
 
             const ctxDoughnut = document.getElementById('doughnutChart').getContext('2d');
@@ -1703,7 +1711,7 @@
                     ctx.fillStyle = "#ffffff";
                     
                     let totalHours = tWorkAll + tGapAll; 
-                    let text = formatNumber(totalHours, 1) + " h",
+                    let text = formatHoursMinutes(totalHours),
                         textX = Math.round((width - ctx.measureText(text).width) / 2),
                         textY = height / 2 - 8;
                         
@@ -1746,7 +1754,7 @@
                                 if(value === 0) return '';
                                 let total = tWorkAll + tGapAll;
                                 let pct = total > 0 ? ((value / total) * 100).toFixed(0) : 0;
-                                return value.toFixed(1) + 'h\n(' + pct + '%)';
+                                return formatHoursMinutes(value) + '\n(' + pct + '%)';
                             },
                             textAlign: 'center'
                         },
@@ -1756,7 +1764,7 @@
                                     let value = context.raw;
                                     let total = tWorkAll + tGapAll;
                                     let pct = total > 0 ? ((value / total) * 100).toFixed(1) : 0;
-                                    return ` ${context.label}: ${value.toFixed(1)}h (${pct}%)`;
+                                    return ` ${context.label}: ${formatHoursMinutes(value)} (${pct}%)`;
                                 }
                             }
                         }
