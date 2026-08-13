@@ -422,7 +422,7 @@
                                 <button id="btnNextPage" class="px-3 py-1 bg-dark-800 hover:bg-dark-700 disabled:opacity-50 disabled:cursor-not-allowed border border-gray-700 rounded transition-colors text-white">Siguiente</button>
                             </div>
 
-                            <span class="flex items-center text-green-500"><i data-lucide="check" class="w-3 h-3 mr-1"></i> Sincronizado con Supabase</span>
+                            <span id="db-status" class="flex items-center text-yellow-400" title="Iniciando conexión">● Conectando con Supabase</span>
                         </div>
                     </div>
                 </div>
@@ -436,10 +436,129 @@
         // ==========================================
         // CONFIGURACIÓN SUPABASE
         // ==========================================
-        const SUPABASE_URL = 'https://roqeubrussnnwkgxarpd.supabase.co'; // URL de tu proyecto
-        const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJvcWV1YnJ1c3NubndrZ3hhcnBkIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzgyNDUyOTIsImV4cCI6MjA5MzgyMTI5Mn0.kdv74W1IrQbrogTKx699rafHK-y95Y93uSit1kh9i0E'; // Llave publica anon
-        
-        const supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+        const SUPABASE_URL = 'https://roqeubrussnnwkgxarpd.supabase.co'.replace(/\/+$/, '');
+        const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJvcWV1YnJ1c3NubndrZ3hhcnBkIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzgyNDUyOTIsImV4cCI6MjA5MzgyMTI5Mn0.kdv74W1IrQbrogTKx699rafHK-y95Y93uSit1kh9i0E';
+        const TELEMETRIA_TABLE = 'telemetria';
+        const SUPABASE_TIMEOUT_MS = 20000;
+
+        // La conexión usa directamente la Data API REST de Supabase.
+        // Así el acceso a la BD no depende de que cargue el SDK @supabase/supabase-js desde un CDN.
+        async function supabaseRestRequest(resource, options = {}) {
+            const method = options.method || 'GET';
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), SUPABASE_TIMEOUT_MS);
+
+            const headers = {
+                'apikey': SUPABASE_ANON_KEY,
+                'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
+                'Accept': 'application/json'
+            };
+
+            if (options.body !== undefined && options.body !== null) {
+                headers['Content-Type'] = 'application/json';
+            }
+            if (options.prefer) headers['Prefer'] = options.prefer;
+
+            try {
+                const response = await fetch(`${SUPABASE_URL}/rest/v1/${resource}`, {
+                    method,
+                    headers,
+                    body: options.body !== undefined && options.body !== null
+                        ? JSON.stringify(options.body)
+                        : undefined,
+                    signal: controller.signal,
+                    cache: 'no-store'
+                });
+
+                const raw = await response.text();
+                let payload = null;
+                if (raw) {
+                    try { payload = JSON.parse(raw); }
+                    catch (_) { payload = raw; }
+                }
+
+                if (!response.ok) {
+                    const err = new Error(
+                        (payload && typeof payload === 'object' && (payload.message || payload.hint || payload.details))
+                            ? (payload.message || payload.hint || payload.details)
+                            : `HTTP ${response.status} ${response.statusText}`
+                    );
+                    err.status = response.status;
+                    err.code = payload && typeof payload === 'object' ? payload.code : null;
+                    err.details = payload;
+                    throw err;
+                }
+
+                return payload;
+            } finally {
+                clearTimeout(timeoutId);
+            }
+        }
+
+        async function dbSelectTelemetria() {
+            const result = await supabaseRestRequest(`${TELEMETRIA_TABLE}?select=*&order=fecha.desc`);
+            return Array.isArray(result) ? result : [];
+        }
+
+        async function dbInsertTelemetria(rows) {
+            if (!Array.isArray(rows) || rows.length === 0) return;
+            await supabaseRestRequest(TELEMETRIA_TABLE, {
+                method: 'POST',
+                body: rows,
+                prefer: 'return=minimal'
+            });
+        }
+
+        async function dbUpsertTelemetria(rows) {
+            if (!Array.isArray(rows) || rows.length === 0) return;
+            await supabaseRestRequest(`${TELEMETRIA_TABLE}?on_conflict=id`, {
+                method: 'POST',
+                body: rows,
+                prefer: 'resolution=merge-duplicates,return=minimal'
+            });
+        }
+
+        function getSupabaseFriendlyError(error) {
+            if (!error) return 'Error desconocido al conectar con Supabase.';
+
+            if (error.name === 'AbortError') {
+                return 'Supabase no respondió a tiempo. Verifica Internet, antivirus/firewall o que el proyecto esté activo.';
+            }
+
+            const msg = String(error.message || 'Error desconocido');
+            const lower = msg.toLowerCase();
+
+            if (error.status === 401) {
+                return 'Supabase rechazó la clave API (401). Verifica la URL del proyecto y la clave anon/publishable.';
+            }
+            if (error.status === 403 || error.code === '42501') {
+                return 'Supabase bloqueó el acceso (RLS/permisos). Ejecuta el archivo SQL de permisos que acompaña este index.';
+            }
+            if (error.status === 404 || error.code === '42P01' || error.code === 'PGRST205') {
+                return 'No se encuentra la tabla public.telemetria o no está expuesta en la Data API de Supabase.';
+            }
+            if (lower.includes('failed to fetch') || lower.includes('networkerror') || lower.includes('network request failed')) {
+                return 'No se pudo alcanzar Supabase. Verifica Internet, DNS, antivirus/firewall y que el dominio del proyecto no esté bloqueado.';
+            }
+
+            return `Error Supabase: ${msg}${error.code ? ` (código ${error.code})` : ''}`;
+        }
+
+        function setDbStatus(state, detail = '') {
+            const el = document.getElementById('db-status');
+            if (!el) return;
+            el.title = detail || '';
+            if (state === 'connected') {
+                el.className = 'flex items-center text-green-500';
+                el.textContent = '● Conectado a Supabase';
+            } else if (state === 'error') {
+                el.className = 'flex items-center text-red-400';
+                el.textContent = '● Sin conexión a Supabase';
+            } else {
+                el.className = 'flex items-center text-yellow-400';
+                el.textContent = '● Conectando con Supabase';
+            }
+        }
 
         // --- State Management ---
         let appData = [];
@@ -686,51 +805,43 @@
         // --- Supabase DB Fetch ---
         window.fetchSupabaseData = async function() {
             showLoader(true, "Descargando datos desde la nube...");
+            setDbStatus('connecting');
             try {
-                // Verificar credenciales genericas por seguridad (para no hacer crash si están vacías)
-                if (SUPABASE_URL.includes("TU_SUPABASE")) {
-                    showLoader(false);
-                    showToast("Configura tus claves API de Supabase en el código.", true);
-                    return;
+                if (!SUPABASE_URL || !/^https:\/\/.+\.supabase\.co$/i.test(SUPABASE_URL)) {
+                    throw new Error('La URL de Supabase no tiene un formato válido.');
+                }
+                if (!SUPABASE_ANON_KEY || SUPABASE_ANON_KEY.length < 20) {
+                    throw new Error('La clave pública de Supabase está vacía o incompleta.');
                 }
 
-                const { data, error } = await supabaseClient
-                    .from('telemetria')
-                    .select('*')
-                    .order('fecha', { ascending: false });
-
-                if (error) {
-                    if (error.code === '42501') {
-                        showToast("Error de seguridad RLS (42501): Ejecuta 'ALTER TABLE telemetria DISABLE ROW LEVEL SECURITY;' en el SQL Editor de Supabase.", true);
-                        throw error;
-                    }
-                    throw error;
-                }
+                const data = await dbSelectTelemetria();
 
                 // Mapear de formato BD a formato FrontEnd
                 appData = data.map(row => ({
                     "id": row.id,
-                    "Equipo": row.equipo,
-                    "Flota": row.flota,
-                    "Placa": row.placa,
-                    "Hrs Movimiento": parseFloat(row.hrs_movimiento) || 0,
-                    "Combustible": parseFloat(row.consumo_combustible) || 0,
-                    "Fecha": row.fecha
+                    "Equipo": row.equipo ?? '',
+                    "Flota": row.flota ?? '-',
+                    "Placa": row.placa ?? '-',
+                    "Hrs Movimiento": Number.parseFloat(row.hrs_movimiento) || 0,
+                    "Combustible": Number.parseFloat(row.consumo_combustible) || 0,
+                    "Fecha": row.fecha || null
                 }));
 
-                // Inicializar opciones de lista desplegable de equipo
                 populateEquipoFilter(appData);
 
                 els.dateRangeSelect.value = 'today';
                 els.equipoFilterSelect.value = 'all';
                 els.customDateRange.classList.add('hidden');
                 els.customDateRange.classList.remove('flex');
-                
+
                 applyFilters();
+                setDbStatus('connected', `${appData.length} registros cargados`);
 
             } catch (error) {
-                console.error("Error fetching data:", error);
-                showToast("Error de conexión a la base de datos.", true);
+                console.error('Error Supabase:', error, error?.details || '');
+                const friendly = getSupabaseFriendlyError(error);
+                setDbStatus('error', friendly);
+                showToast(friendly, true);
             } finally {
                 showLoader(false);
             }
@@ -950,10 +1061,10 @@
                                 fecha: row.Fecha
                             }));
 
-                            const { error } = await supabaseClient.from('telemetria').insert(dbPayload);
-                            if (error) {
-                                if (error.code === '42501') throw new Error("Error RLS (42501): Ejecuta 'ALTER TABLE telemetria DISABLE ROW LEVEL SECURITY;' en Supabase.");
-                                throw new Error("Error al intentar guardar la información en Supabase.");
+                            try {
+                                await dbInsertTelemetria(dbPayload);
+                            } catch (dbError) {
+                                throw new Error(getSupabaseFriendlyError(dbError));
                             }
                             showToast(`¡Éxito! ${dbPayload.length} registros de horas guardados.`);
 
@@ -1069,14 +1180,20 @@
 
                             // Actualizar registros existentes independientemente de los nuevos insertados
                             if (toUpdate.length > 0) {
-                                const { error: updateError } = await supabaseClient.from('telemetria').upsert(toUpdate);
-                                if (updateError) throw new Error("Error actualizando combustible: " + updateError.message);
+                                try {
+                                    await dbUpsertTelemetria(toUpdate);
+                                } catch (dbError) {
+                                    throw new Error('Error actualizando combustible. ' + getSupabaseFriendlyError(dbError));
+                                }
                             }
                             
                             // Insertar nuevos registros huérfanos de horas
                             if (toInsert.length > 0) {
-                                const { error: insertError } = await supabaseClient.from('telemetria').insert(toInsert);
-                                if (insertError) throw new Error("Error insertando combustible: " + insertError.message);
+                                try {
+                                    await dbInsertTelemetria(toInsert);
+                                } catch (dbError) {
+                                    throw new Error('Error insertando combustible. ' + getSupabaseFriendlyError(dbError));
+                                }
                             }
 
                             showToast(`¡Éxito! ${matchCount} cargas de diésel guardadas correctamente.`);
